@@ -151,11 +151,7 @@ def select_port():
 
             # Izchakwame da se poyavi port
             while True:
-                try:
-                    time.sleep(2)
-                except KeyboardInterrupt:
-                    print(f"\n  {C['yellow']}Довиждане!{C['reset']}\n")
-                    sys.exit(0)
+                time.sleep(2)
                 ports = get_port_list()
                 if ports:
                     break
@@ -179,11 +175,7 @@ def select_port():
 
         # Dokato chakame vhod, skanirame za promeni
         while not input_ready.is_set():
-            try:
-                time.sleep(1.5)
-            except KeyboardInterrupt:
-                print(f"\n  {C['yellow']}Довиждане!{C['reset']}\n")
-                sys.exit(0)
+            time.sleep(1.5)
             new_ports = get_port_list()
             new_set = set(p.device for p in new_ports)
 
@@ -352,6 +344,13 @@ def run_session(port, baud):
                 break
 
             if not user_input:
+                try:
+                    ser.write(b"\n")
+                except serial.SerialException as e:
+                    print(f"  {C['red']}Грешка при изпращане: {e}{C['reset']}")
+                    disconnect_event.set()
+                    result = "reconnect"
+                    break
                 continue
 
             cmd = user_input.strip().lower()
