@@ -468,7 +468,7 @@ def wait_for_port(port, screen):
 
 # === Session screen =======================================================
 
-COMMANDS = " /quit  /port  /clear  /hex  /eol  /ping  /info  /log  /theme"
+COMMANDS = " /quit  /port  /baud  /clear  /hex  /eol  /ping  /info  /log  /theme"
 RX_IDLE = 0.15       # an unfinished RX line (or HEX message) is shown after this many seconds
 HEX_MAX = 256        # a HEX message this long is shown without waiting for a pause
 ENTRY_INDENT = 22    # width of '  12:00:00.000  TX >  ' before the text of an entry
@@ -1048,7 +1048,7 @@ def ping_card(port, res, hex_mode, cols):
 def run_session(port, baud, settings, open_attempts=1):
     """
     Opens the serial connection and handles communication.
-    settings: {'eol', 'hex', 'log', 'history', 'screen'} - kept between sessions.
+    settings: {'eol', 'hex', 'log', 'history', 'screen', 'baud'} - kept between sessions.
     'screen' is the session screen kept open after a disconnect; when it is
     set, this session is a reconnect and continues on that screen.
     Returns:
@@ -1057,6 +1057,7 @@ def run_session(port, baud, settings, open_attempts=1):
         'switch'       - the user wants to choose another port (/port)
         'quit'         - the user wants to exit
     """
+    settings["baud"] = baud  # changed by /baud; used for reconnects and as the next default
     screen = settings["screen"]
     if screen is None:
         print(f"  {C['cyan']}Connecting to {port} @ {baud}...{C['reset']}")
@@ -1189,6 +1190,27 @@ def run_session(port, baud, settings, open_attempts=1):
                                         f"{C['dim']}(/eol {opts})")
                 continue
 
+            elif cmd == "/baud" or cmd.startswith("/baud "):
+                arg = cmd[5:].strip()
+                if not arg:
+                    screen.entry("sys", f"{C['cyan']}Baud rate: {ser.baudrate}   "
+                                        f"{C['dim']}(/baud <rate>, e.g. /baud 115200)")
+                    continue
+                try:
+                    new_baud = int(arg)
+                    if new_baud <= 0:
+                        raise ValueError
+                    ser.baudrate = new_baud
+                except ValueError:
+                    screen.entry("sys", f"{C['red']}Invalid baud rate: {arg}")
+                except serial.SerialException as e:
+                    screen.entry("sys", f"{C['red']}Cannot set baud rate {arg}: {e}")
+                else:
+                    settings["baud"] = screen.baud = new_baud
+                    screen.entry("sys", f"{C['cyan']}Baud rate set to {new_baud}")
+                    screen.refresh()
+                continue
+
             elif cmd == "/ping" or cmd.startswith("/ping "):
                 screen.entry("tx", f"{C['white']}{user_input.strip()}")
                 try:
@@ -1292,16 +1314,15 @@ def main():
     """
     set_theme(load_theme())
     settings = {"eol": "lf", "hex": False, "log": None, "history": deque(maxlen=1000),
-                "screen": None}
-    baud = DEFAULT_BAUD
+                "screen": None, "baud": DEFAULT_BAUD}
     try:
         while True:
             port = select_port()
-            baud = select_baud(default=baud)
+            baud = select_baud(default=settings["baud"])
 
             result = run_session(port, baud, settings)
             while result == "disconnected" and wait_for_port(port, settings["screen"]):
-                result = run_session(port, baud, settings, open_attempts=3)
+                result = run_session(port, settings["baud"], settings, open_attempts=3)
 
             if settings["screen"]:  # waiting cancelled with Enter
                 settings["screen"].close()

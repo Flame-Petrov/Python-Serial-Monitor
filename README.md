@@ -61,6 +61,8 @@ python serial_terminal.py
 |---|---|
 | `/quit` | Close the connection and exit |
 | `/port` | Close the connection and go back to the port list (the current baud rate becomes the `Enter` default) |
+| `/baud` | Show the current baud rate |
+| `/baud <rate>` | Change the baud rate without reconnecting (also used for automatic reconnects and as the next `Enter` default) |
 | `/clear` | Clear the screen and redraw the connection header with the commands |
 | `/hex` | Toggle HEX mode for sending **and** receiving |
 | `/eol` | Show the current line ending |
