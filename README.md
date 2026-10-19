@@ -5,8 +5,6 @@ Arduino, ESP32, GSM/USB modem or any other serial device — in plain text or ra
 
 Single file, one dependency ([pyserial](https://pypi.org/project/pyserial/)), works on Windows, Linux and macOS.
 
-> The user interface is in Bulgarian. Commands and this README are in English.
-
 ![Port and baud rate selection](docs/screenshots/menu.png)
 
 ## Features
@@ -92,7 +90,7 @@ If the device never answers, the line ending is the first thing to check.
 
 ### Automatic reconnect
 
-When the device is unplugged, the monitor shows `!! Устройството е изключено !!` immediately and waits for the
+When the device is unplugged, the monitor shows `!! Device disconnected !!` immediately and waits for the
 same port to reappear, then reconnects with the same baud rate, mode and line ending.
 
 - Press `Enter` while waiting to go back to the port list instead.
@@ -104,14 +102,14 @@ same port to reappear, then reconnects with the same baud rate, mode and line en
 
 ## Troubleshooting
 
-**`Greska pri import na pyserial`** — pyserial is not installed for the Python you are running, or a file named
+**`Error importing pyserial`** — pyserial is not installed for the Python you are running, or a file named
 `serial.py` in the same folder shadows the library. Rename that file and run:
 
 ```bash
 python -m pip install pyserial
 ```
 
-**`Неуспешно свързване` (connection failed)** — the port is open in another program (Arduino IDE serial monitor,
+**`Connection failed`** — the port is open in another program (Arduino IDE serial monitor,
 PuTTY, another terminal). Close it and try again. On Linux, add your user to the `dialout` group.
 
 **Garbled text** — the baud rate does not match the device. Reconnect with the correct one.
