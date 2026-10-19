@@ -56,6 +56,7 @@ python serial_terminal.py
 | Command | Description |
 |---|---|
 | `/quit` | Close the connection and exit |
+| `/port` | Close the connection and go back to the port list (the current baud rate becomes the `Enter` default) |
 | `/clear` | Clear the screen and redraw the connection header with the commands |
 | `/hex` | Toggle HEX mode for sending **and** receiving |
 | `/eol` | Show the current line ending |

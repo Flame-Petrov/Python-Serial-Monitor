@@ -257,12 +257,12 @@ def select_port():
 
 # === Step 2: Select a baud rate ===========================================
 
-def select_baud():
-    """Shows the list of baud rates and reads the choice."""
+def select_baud(default=DEFAULT_BAUD):
+    """Shows the list of baud rates and reads the choice. Enter selects default."""
     print(f"  {C['yellow']}Standard baud rates:{C['reset']}\n")
     per_row = 4
     for i, baud in enumerate(COMMON_BAUD_RATES, 1):
-        marker = f"{C['magenta']}*{C['reset']}" if baud == DEFAULT_BAUD else " "
+        marker = f"{C['magenta']}*{C['reset']}" if baud == default else " "
         end = "\n" if i % per_row == 0 else ""
         print(f"    {marker} {C['green']}{i:>2}.{C['reset']} {baud:<10}", end=end)
     if len(COMMON_BAUD_RATES) % per_row != 0:
@@ -272,12 +272,12 @@ def select_baud():
     while True:
         prompt(
             f"  {C['cyan']}> Select a baud rate [1-{len(COMMON_BAUD_RATES)}] "
-            f"or enter a custom one (Enter = {DEFAULT_BAUD}): {C['reset']}"
+            f"or enter a custom one (Enter = {default}): {C['reset']}"
         )
         choice = read_line().strip()
         try:
             if not choice:
-                baud = DEFAULT_BAUD
+                baud = default
             else:
                 num = int(choice)
                 if 1 <= num <= len(COMMON_BAUD_RATES):
@@ -384,7 +384,7 @@ def session_header(port, baud, settings):
     print(f"  {'=' * w}{C['reset']}")
     print()
     print(f"  {C['dim']}Type text and press Enter to send.")
-    print(f"  Commands:  /quit  /clear  /hex  /eol [lf|crlf|cr|none]  /info")
+    print(f"  Commands:  /quit  /port  /clear  /hex  /eol [lf|crlf|cr|none]  /info")
     print(f"  Mode: {'HEX' if settings['hex'] else 'TEXT'}   "
           f"Line ending: {settings['eol'].upper()}{C['reset']}")
     print(f"  {C['dim']}{'-' * w}{C['reset']}")
@@ -398,6 +398,7 @@ def run_session(port, baud, settings, open_attempts=1):
     Returns:
         'disconnected' - the device was unplugged during the session
         'failed'       - the port could not be opened
+        'switch'       - the user wants to choose another port (/port)
         'quit'         - the user wants to exit
     """
     print(f"  {C['cyan']}Connecting to {port} @ {baud}...{C['reset']}")
@@ -469,6 +470,12 @@ def run_session(port, baud, settings, open_attempts=1):
             if cmd == "/quit":
                 print(f"\n  {C['yellow']}Closing...{C['reset']}")
                 result = "quit"
+                break
+
+            elif cmd == "/port":
+                show(f"\n  {C['yellow']}Closing {port}, back to port selection...{C['reset']}")
+                print(f"  {C['dim']}{'=' * BOX_W}{C['reset']}\n")
+                result = "switch"
                 break
 
             elif cmd == "/clear":
@@ -560,10 +567,11 @@ def main():
     """
     banner()
     settings = {"eol": "lf", "hex": False}
+    baud = DEFAULT_BAUD
     try:
         while True:
             port = select_port()
-            baud = select_baud()
+            baud = select_baud(default=baud)
 
             result = run_session(port, baud, settings)
             while result == "disconnected" and wait_for_port(port):
@@ -571,7 +579,7 @@ def main():
 
             if result == "quit":
                 break
-            # 'failed' or waiting cancelled -> back to port selection
+            # 'switch', 'failed' or waiting cancelled -> back to port selection
     except (KeyboardInterrupt, EOFError):
         print()
 
