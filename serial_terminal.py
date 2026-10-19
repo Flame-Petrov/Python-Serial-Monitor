@@ -374,6 +374,23 @@ def reader_thread(ser, stop_event, disconnect_event, settings, out):
 
 # === Session: connect and communicate =====================================
 
+def session_header(port, baud, settings):
+    """Prints the connection banner, the command list and the current mode."""
+    w = BOX_W
+    conn_msg = f"CONNECTED  |  {port}  |  {baud} baud"
+    print()
+    print(f"  {C['green']}{'=' * w}")
+    print(f"  {center_text(conn_msg, w)}")
+    print(f"  {'=' * w}{C['reset']}")
+    print()
+    print(f"  {C['dim']}Type text and press Enter to send.")
+    print(f"  Commands:  /quit  /clear  /hex  /eol [lf|crlf|cr|none]  /info")
+    print(f"  Mode: {'HEX' if settings['hex'] else 'TEXT'}   "
+          f"Line ending: {settings['eol'].upper()}{C['reset']}")
+    print(f"  {C['dim']}{'-' * w}{C['reset']}")
+    print()
+
+
 def run_session(port, baud, settings, open_attempts=1):
     """
     Opens the serial connection and handles communication.
@@ -406,19 +423,7 @@ def run_session(port, baud, settings, open_attempts=1):
             print(f"\n  {C['dim']}{'=' * BOX_W}{C['reset']}\n")
             return "failed"
 
-    w = BOX_W
-    conn_msg = f"CONNECTED  |  {port}  |  {baud} baud"
-    print()
-    print(f"  {C['green']}{'=' * w}")
-    print(f"  {center_text(conn_msg, w)}")
-    print(f"  {'=' * w}{C['reset']}")
-    print()
-    print(f"  {C['dim']}Type text and press Enter to send.")
-    print(f"  Commands:  /quit  /clear  /hex  /eol [lf|crlf|cr|none]  /info")
-    print(f"  Mode: {'HEX' if settings['hex'] else 'TEXT'}   "
-          f"Line ending: {settings['eol'].upper()}{C['reset']}")
-    print(f"  {C['dim']}{'-' * w}{C['reset']}")
-    print()
+    session_header(port, baud, settings)
 
     stop_event = threading.Event()
     disconnect_event = threading.Event()
@@ -467,8 +472,10 @@ def run_session(port, baud, settings, open_attempts=1):
                 break
 
             elif cmd == "/clear":
-                cls()
-                print(f"  {C['dim']}(screen cleared){C['reset']}\n")
+                with out["lock"]:
+                    cls()
+                    session_header(port, baud, settings)
+                    out["mid_line"] = False
                 continue
 
             elif cmd == "/hex":

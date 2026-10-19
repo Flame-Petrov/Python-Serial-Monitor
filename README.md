@@ -56,7 +56,7 @@ python serial_terminal.py
 | Command | Description |
 |---|---|
 | `/quit` | Close the connection and exit |
-| `/clear` | Clear the screen |
+| `/clear` | Clear the screen and redraw the connection header with the commands |
 | `/hex` | Toggle HEX mode for sending **and** receiving |
 | `/eol` | Show the current line ending |
 | `/eol lf\|crlf\|cr\|none` | Set the line ending appended to sent text |
