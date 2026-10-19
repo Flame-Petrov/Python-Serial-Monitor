@@ -356,6 +356,11 @@ def reader_thread(ser, stop_event, disconnect_event, settings, out):
                 with out["lock"]:
                     print(f"{C['green']}{text}{C['reset']}", end="", flush=True)
                     out["mid_line"] = mid_line
+                    # During /ping also collect the reply
+                    if out["ping"] is not None:
+                        if out["ping"]["t"] is None:
+                            out["ping"]["t"] = time.monotonic()
+                        out["ping"]["buf"] += data
             else:
                 time.sleep(0.02)
         except (serial.SerialException, OSError):
@@ -384,11 +389,70 @@ def session_header(port, baud, settings):
     print(f"  {'=' * w}{C['reset']}")
     print()
     print(f"  {C['dim']}Type text and press Enter to send.")
-    print(f"  Commands:  /quit  /port  /clear  /hex  /eol [lf|crlf|cr|none]  /info")
+    print(f"  Commands:  /quit  /port  /clear  /hex  /eol [lf|crlf|cr|none]  /ping  /info")
     print(f"  Mode: {'HEX' if settings['hex'] else 'TEXT'}   "
           f"Line ending: {settings['eol'].upper()}{C['reset']}")
     print(f"  {C['dim']}{'-' * w}{C['reset']}")
     print()
+
+
+def escape_bytes(data):
+    """Shows bytes as text with visible control characters (\\r, \\n, \\xNN)."""
+    text = data.decode("utf-8", errors="backslashreplace")
+    return "".join(
+        ch.encode("unicode_escape").decode("ascii") if ch < " " or ch == "\x7f" else ch
+        for ch in text
+    )
+
+
+def ping(ser, arg, settings, out, show):
+    """
+    Connectivity test: checks the port and line signals, sends a probe
+    and waits for any reply.
+    arg: probe to send (empty = 'AT' + CRLF). In HEX mode arg is hex bytes,
+    in TEXT mode the current line ending is added.
+    """
+    if not arg:
+        probe = b"AT\r\n"
+    elif settings["hex"]:
+        probe = parse_hex(arg)
+    else:
+        probe = arg.encode("utf-8") + EOL_OPTIONS[settings["eol"]]
+
+    def signal(name):
+        try:
+            return "on" if getattr(ser, name) else "off"
+        except (serial.SerialException, OSError, AttributeError):
+            return "n/a"
+
+    show(f"\n  {C['cyan']}PING {ser.port}  probe: \"{escape_bytes(probe)}\"{C['reset']}")
+    show(f"  {C['dim']}Port:     {'open' if ser.is_open else 'closed'}")
+    show(f"  Signals:  CTS={signal('cts')}  DSR={signal('dsr')}  CD={signal('cd')}{C['reset']}")
+
+    with out["lock"]:
+        out["ping"] = {"buf": bytearray(), "t": None}
+    try:
+        start = time.monotonic()
+        ser.write(probe)
+        # Wait up to 2 s for the first byte, then a little longer for the rest
+        while time.monotonic() - start < 2 and out["ping"]["t"] is None:
+            time.sleep(0.02)
+        if out["ping"]["t"] is not None:
+            time.sleep(0.3)
+    finally:
+        with out["lock"]:
+            reply, first = bytes(out["ping"]["buf"]), out["ping"]["t"]
+            out["ping"] = None
+
+    if reply:
+        ms = int((first - start) * 1000)
+        show(f"  {C['dim']}Reply:    {len(reply)} bytes in {ms} ms  -> \"{escape_bytes(reply)}\"{C['reset']}")
+        show(f"  {C['green']}Result:   OK - the device is responding{C['reset']}\n")
+    else:
+        show(f"  {C['dim']}Reply:    none within 2 s{C['reset']}")
+        show(f"  {C['red']}Result:   NO REPLY - the port is open but the device did not answer{C['reset']}")
+        show(f"  {C['dim']}Tip: not every device answers AT. "
+             f"Try /ping <a command your device understands>.{C['reset']}\n")
 
 
 def run_session(port, baud, settings, open_attempts=1):
@@ -428,7 +492,7 @@ def run_session(port, baud, settings, open_attempts=1):
 
     stop_event = threading.Event()
     disconnect_event = threading.Event()
-    out = {"lock": threading.Lock(), "mid_line": False}
+    out = {"lock": threading.Lock(), "mid_line": False, "ping": None}
 
     reader = threading.Thread(
         target=reader_thread,
@@ -500,6 +564,18 @@ def run_session(port, baud, settings, open_attempts=1):
                     opts = " | ".join(EOL_OPTIONS)
                     show(f"  {C['magenta']}Line ending: {settings['eol'].upper()}   "
                          f"{C['dim']}(/eol {opts}){C['reset']}")
+                continue
+
+            elif cmd == "/ping" or cmd.startswith("/ping "):
+                try:
+                    ping(ser, user_input.strip()[5:].strip(), settings, out, show)
+                except serial.SerialException as e:
+                    show(f"  {C['red']}Send error: {e}{C['reset']}")
+                    disconnect_event.set()
+                    result = "disconnected"
+                    break
+                except ValueError:
+                    show(f"  {C['red']}Invalid HEX format.{C['reset']}")
                 continue
 
             elif cmd == "/info":

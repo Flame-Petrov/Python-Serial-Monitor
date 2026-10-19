@@ -13,13 +13,14 @@ Single file, one dependency ([pyserial](https://pypi.org/project/pyserial/)), wo
 - **Two-way communication** — incoming data in green, sent data marked with `TX >`.
 - **Text and HEX modes** — `/hex` switches both sending and receiving to hex bytes, for binary protocols.
 - **Configurable line ending** — send `LF`, `CRLF`, `CR` or nothing after each line (`/eol`).
+- **Connectivity test** — `/ping` sends a probe and reports whether the device replies, how fast, and the modem line signals.
 - **Automatic reconnect** — if the device is unplugged, the monitor waits for the same port to return and reconnects at the same baud rate.
 - **Correct UTF-8 handling** — multi-byte characters (e.g. Cyrillic) are decoded correctly even when split across reads.
 - **Clean exit** — `Ctrl+C` exits gracefully from any screen.
 
 ## Screenshots
 
-**Talking to a USB modem** — `AT` → `OK` in text mode, the same exchange in HEX mode, then `/info`:
+**Talking to a USB modem** — a `/ping` connectivity test, `AT` → `OK` in text mode, the same exchange in HEX mode, then `/info`:
 
 ![Session in text and hex mode](docs/screenshots/session.png)
 
@@ -61,7 +62,35 @@ python serial_terminal.py
 | `/hex` | Toggle HEX mode for sending **and** receiving |
 | `/eol` | Show the current line ending |
 | `/eol lf\|crlf\|cr\|none` | Set the line ending appended to sent text |
+| `/ping` | Test connectivity: send `AT` and report whether and how fast the device replies |
+| `/ping <probe>` | Same, with your own probe (text + line ending, or hex bytes in HEX mode) |
 | `/info` | Show port settings, mode and connection status |
+
+### Connectivity test
+
+`/ping` checks that the device is really there and answering:
+
+```text
+  PING COM3  probe: "AT\r\n"
+  Port:     open
+  Signals:  CTS=on  DSR=on  CD=on
+  Reply:    9 bytes in 32 ms  -> "AT\r\r\nOK\r\n"
+  Result:   OK - the device is responding
+```
+
+- **Port** — whether the serial port is still open.
+- **Signals** — modem control lines (CTS, DSR, CD). Many USB adapters and boards report them as `off` or `n/a`; that is normal.
+- **Reply** — the first reply within 2 seconds, its size, latency and contents with control characters made visible.
+
+The default probe `AT` suits modems. Other devices only answer commands they understand, so give your own probe:
+
+```text
+/ping hello            text mode: sends "hello" + the current line ending
+/ping 01 03 00 00 00 01 84 0A   hex mode: sends these exact bytes
+```
+
+`NO REPLY` means the port works but the device did not answer that probe — check the baud rate, line ending and
+the probe itself.
 
 ### HEX mode
 
