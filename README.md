@@ -9,12 +9,15 @@ Single file, one dependency ([pyserial](https://pypi.org/project/pyserial/)), wo
 
 ## Features
 
-- **Live port detection** — the port list refreshes on its own while you choose; newly plugged and removed devices are announced.
-- **Two-way communication** — incoming data in green, sent data marked with `TX >`.
-- **Text and HEX modes** — `/hex` switches both sending and receiving to hex bytes, for binary protocols.
+- **Live port detection** — a two-step wizard (port, then baud rate) with a port table showing descriptions and VID:PID. It refreshes on its own while you choose; newly plugged devices get a `new` badge and removed ones are announced.
+- **Two-way communication** — every line is timestamped and marked `TX ▶` (sent), `RX ◀` (received) or `SYS` (monitor messages).
+- **Status bar** — connection state, port, baud rate, mode, line ending, RX/TX byte counters and uptime stay on the top row; the command bar and input line stay at the bottom while data scrolls in between.
+- **Light and dark theme** — `/theme` switches between them; the choice is remembered.
+- **Session logging** — `/log` saves everything shown to a timestamped file.
+- **Text and HEX modes** — `/hex` switches both sending and receiving to hex bytes, shown as a hex dump with an ASCII column and the reply time, for binary protocols.
 - **Configurable line ending** — send `LF`, `CRLF`, `CR` or nothing after each line (`/eol`).
-- **Connectivity test** — `/ping` sends a probe and reports whether the device replies, how fast, and the modem line signals.
-- **Automatic reconnect** — if the device is unplugged, the monitor waits for the same port to return and reconnects at the same baud rate.
+- **Connectivity test** — `/ping` sends a probe and shows a report card: whether the device replies, how fast, and the modem line signals.
+- **Automatic reconnect** — if the device is unplugged, the monitor waits for the same port to return and reconnects at the same baud rate, on the same screen.
 - **Correct UTF-8 handling** — multi-byte characters (e.g. Cyrillic) are decoded correctly even when split across reads.
 - **Clean exit** — `Ctrl+C` exits gracefully from any screen.
 
@@ -65,22 +68,43 @@ python serial_terminal.py
 | `/ping` | Test connectivity: send `AT` and report whether and how fast the device replies |
 | `/ping <probe>` | Same, with your own probe (text + line ending, or hex bytes in HEX mode) |
 | `/info` | Show port settings, mode and connection status |
+| `/log` | Start or stop saving the session to `serial_<port>_<date>_<time>.log` in the current folder |
+| `/theme` | Switch between the dark and light theme (also works at the port prompt) |
+
+### Session screen
+
+- Received data is shown line by line. CR, LF and CRLF all end a line, and empty lines are skipped.
+  A line without an ending (e.g. a `> ` prompt) appears after 150 ms of silence.
+- In HEX mode the bytes received until a 150 ms pause (or 256 bytes) are shown as one hex dump.
+- `ERROR`, `+CME ERROR` and `+CMS ERROR` replies are shown in red.
+- When the output is redirected (not a terminal), the monitor prints plain lines without the status bar.
+
+### Themes
+
+The dark theme uses your terminal's own colours and background. The light theme paints its own
+background with 24-bit colours, which Windows Terminal and all modern terminals support. The choice is saved
+in `~/.serial_terminal.json`.
 
 ### Connectivity test
 
 `/ping` checks that the device is really there and answering:
 
 ```text
-  PING COM3  probe: "AT\r\n"
-  Port:     open
-  Signals:  CTS=on  DSR=on  CD=on
-  Reply:    9 bytes in 32 ms  -> "AT\r\r\nOK\r\n"
-  Result:   OK - the device is responding
+  ┌─ PING · COM3 ──────────────────────────────────────────────────────────┐
+  │  Probe    "AT\r\n"                                                     │
+  │  Port     ● open                                                       │
+  │  Signals  ● CTS   ● DSR   ● CD   ○ RI                                  │
+  │  Reply    9 bytes in 32 ms  → "AT\r\r\nOK\r\n"                         │
+  │  Latency  █░░░░░░░░░░░░░░░░░░░  32 / 2000 ms                           │
+  ├────────────────────────────────────────────────────────────────────────┤
+  │   OK   the device is responding                                        │
+  └────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Port** — whether the serial port is still open.
-- **Signals** — modem control lines (CTS, DSR, CD). Many USB adapters and boards report them as `off` or `n/a`; that is normal.
+- **Signals** — modem control lines (CTS, DSR, CD, RI); `●` is on, `○` is off. Many USB adapters and boards report them all as off; that is normal.
 - **Reply** — the first reply within 2 seconds, its size, latency and contents with control characters made visible.
+- **Latency** — the reply time against the 2-second limit.
 
 The default probe `AT` suits modems. Other devices only answer commands they understand, so give your own probe:
 
@@ -103,7 +127,16 @@ In HEX mode, type bytes in any of these formats:
 0xF 0x1          (single digits are padded: 0F 01)
 ```
 
-Received bytes are shown as hex, with a new line after every `0A` byte.
+Sent and received bytes are shown as a hex dump: offset, 16 bytes per row (8 on terminals narrower than
+105 columns) and an ASCII column. Control bytes (CR, LF, NUL…) are dimmed so the payload stands out. A reply
+to a HEX send shows how long the device took (`+31 ms`), and the command bar suggests `/ping` with the
+last bytes you sent.
+
+```text
+                    offset  00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F   ascii
+  12:05:30.010  TX ▶  0000  41 54 0D 0A                                       │AT..            │
+  12:05:30.041  RX ◀  0000  41 54 0D 0D 0A 4F 4B 0D  0A                       │AT...OK..       │  +31 ms
+```
 
 ### Line endings
 
@@ -120,8 +153,10 @@ If the device never answers, the line ending is the first thing to check.
 
 ### Automatic reconnect
 
-When the device is unplugged, the monitor shows `!! Device disconnected !!` immediately and waits for the
-same port to reappear, then reconnects with the same baud rate, mode and line ending.
+When the device is unplugged, the monitor shows a red `DEVICE DISCONNECTED` banner immediately. The status
+bar switches to `DISCONNECTED` with the reconnect attempt, and a spinner shows how long the device has been
+gone. When the same port reappears, the monitor reconnects with the same baud rate, mode and line ending and
+shows a green `RECONNECTED` banner with the time offline; the session continues on the same screen.
 
 - Press `Enter` while waiting to go back to the port list instead.
 - Press `Ctrl+C` to exit.
