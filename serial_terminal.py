@@ -18,6 +18,9 @@ import sys
 import threading
 import time
 import os
+import queue
+import codecs
+import re
 
 try:
     import serial
@@ -35,6 +38,10 @@ except ImportError as e:
     print(f"   Python executable: {sys.executable}")
     sys.exit(1)
 
+# Vklyuchva ANSI tsvetovete v Windows konzolata (VT rezhim)
+if os.name == "nt":
+    os.system("")
+
 
 # === Konfiguratsia ========================================================
 
@@ -43,6 +50,15 @@ COMMON_BAUD_RATES = [
     19200, 28800, 38400, 57600, 115200,
     230400, 460800, 921600
 ]
+DEFAULT_BAUD = 9600
+
+# Kraj na reda pri izprashtane v TEXT rezhim
+EOL_OPTIONS = {
+    "lf":   b"\n",
+    "crlf": b"\r\n",
+    "cr":   b"\r",
+    "none": b"",
+}
 
 COLORS = {
     "reset":   "\033[0m",
@@ -70,7 +86,7 @@ def cls():
 
 
 def center_text(text, width):
-    """Tsentrira tekst v pole s fiksirana shirina (ASCII-bezopasno)."""
+    """Tsentrira tekst v pole s fiksirana shirina."""
     text_len = len(text)
     if text_len >= width:
         return text[:width]
@@ -91,6 +107,53 @@ def banner():
     print(f"  |{center_text(subtitle, w)}|")
     print(f"  +{'-' * w}+{C['reset']}")
     print()
+
+
+# === Vhod ot klaviaturata (edin fonov thread za tsyalata programa) =========
+
+_input_queue = queue.Queue()
+_input_thread = None
+
+
+def _stdin_worker():
+    """Chete redove ot stdin i gi slaga v opashkata. None oznachava EOF."""
+    while True:
+        try:
+            line = input()
+        except (EOFError, KeyboardInterrupt, OSError):
+            _input_queue.put(None)
+            return
+        _input_queue.put(line)
+
+
+def read_line(timeout=None):
+    """
+    Vrashta sledvashtiya red ot klaviaturata.
+    Vrashta None pri timeout; hvarlya EOFError ako vhodat e zatvoren.
+    Glavniyat thread ostava svoboden - Ctrl+C i disconnect se zabelyazvat vednaga.
+    """
+    global _input_thread
+    if _input_thread is None:
+        _input_thread = threading.Thread(target=_stdin_worker, daemon=True)
+        _input_thread.start()
+
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        try:
+            line = _input_queue.get(timeout=0.1)
+        except queue.Empty:
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            continue
+        if line is None:
+            _input_queue.put(None)  # EOF ostava za sledvashtite izvikvania
+            raise EOFError
+        return line
+
+
+def prompt(text):
+    """Pechata podkana bez nov red."""
+    print(text, end="", flush=True)
 
 
 # === Stypka 1: Skanirane i izbor na port ==================================
@@ -123,23 +186,7 @@ def select_port():
     Potrebitelyat mozhe da vavede nomer po vsyako vreme.
     Ako nyama portove, izchakva i obnovyava avtomatichno.
     """
-    known_ports = []
-    input_ready = threading.Event()
-    user_choice = [None]
-    should_stop = threading.Event()
-
-    def input_worker():
-        """Fonov thread, koito chaka potrebitelski vhod."""
-        while not should_stop.is_set():
-            try:
-                line = input(f"  {C['cyan']}> Избери порт (номер) или 'q' за изход: {C['reset']}").strip()
-                user_choice[0] = line
-                input_ready.set()
-                return
-            except EOFError:
-                user_choice[0] = "q"
-                input_ready.set()
-                return
+    port_prompt = f"  {C['cyan']}> Избери порт (номер) или 'q' за изход: {C['reset']}"
 
     while True:
         ports = get_port_list()
@@ -159,58 +206,48 @@ def select_port():
                 count_str = f"  {C['dim']}Сканиране... ({time.strftime('%H:%M:%S')}){C['reset']}"
                 print(f"\033[A\033[2K{count_str}")
 
-            # Novi portove sa namereni, restartirami menyuto
-            continue
-
         # Ima portove - pokazvame gi
         display_ports(ports)
         known_set = set(p.device for p in ports)
-
-        # Startirame input thread
-        input_ready.clear()
-        should_stop.clear()
-        user_choice[0] = None
-        t = threading.Thread(target=input_worker, daemon=True)
-        t.start()
+        prompt(port_prompt)
 
         # Dokato chakame vhod, skanirame za promeni
-        while not input_ready.is_set():
-            time.sleep(1.5)
+        choice = None
+        while choice is None:
+            choice = read_line(timeout=1.5)
+            if choice is not None:
+                break
+
             new_ports = get_port_list()
             new_set = set(p.device for p in new_ports)
-
             if new_set != known_set:
-                added = new_set - known_set
-                removed = known_set - new_set
-                if added:
-                    for dev in added:
-                        print(f"\n  {C['green']}+ Нов порт открит: {dev}{C['reset']}")
-                if removed:
-                    for dev in removed:
-                        print(f"\n  {C['red']}- Порт премахнат: {dev}{C['reset']}")
+                for dev in sorted(new_set - known_set):
+                    print(f"\n  {C['green']}+ Нов порт открит: {dev}{C['reset']}")
+                for dev in sorted(known_set - new_set):
+                    print(f"\n  {C['red']}- Порт премахнат: {dev}{C['reset']}")
 
                 known_set = new_set
                 ports = new_ports
                 print()
-                display_ports(ports)
-                print(f"  {C['cyan']}> Избери порт (номер) или 'q' за изход: {C['reset']}", end="", flush=True)
+                if ports:
+                    display_ports(ports)
+                else:
+                    print(f"  {C['dim']}Няма открити серийни портове.{C['reset']}\n")
+                prompt(port_prompt)
 
-        # Obrabotvame izbora
-        should_stop.set()
-        choice = user_choice[0]
-
-        if choice and choice.lower() == "q":
+        # Obrabotvame izbora spryamo pokazaniya spisak
+        choice = choice.strip()
+        if choice.lower() == "q":
             print(f"\n  {C['yellow']}Довиждане!{C['reset']}\n")
             sys.exit(0)
 
         try:
             idx = int(choice) - 1
-            current_ports = get_port_list()
-            if 0 <= idx < len(current_ports):
-                selected = current_ports[idx]
+            if 0 <= idx < len(ports):
+                selected = ports[idx]
                 print(f"  {C['green']}Избран: {selected.device}{C['reset']}\n")
                 return selected.device
-        except (ValueError, TypeError, IndexError):
+        except ValueError:
             pass
 
         print(f"  {C['red']}Невалиден избор. Опитай пак.{C['reset']}")
@@ -225,7 +262,7 @@ def select_baud():
     print(f"  {C['yellow']}Стандартни baud rates:{C['reset']}\n")
     per_row = 4
     for i, baud in enumerate(COMMON_BAUD_RATES, 1):
-        marker = f"{C['magenta']}*{C['reset']}" if baud == 9600 else " "
+        marker = f"{C['magenta']}*{C['reset']}" if baud == DEFAULT_BAUD else " "
         end = "\n" if i % per_row == 0 else ""
         print(f"    {marker} {C['green']}{i:>2}.{C['reset']} {baud:<10}", end=end)
     if len(COMMON_BAUD_RATES) % per_row != 0:
@@ -233,34 +270,92 @@ def select_baud():
     print()
 
     while True:
+        prompt(
+            f"  {C['cyan']}> Избери baud rate [1-{len(COMMON_BAUD_RATES)}] "
+            f"или въведи custom (Enter = {DEFAULT_BAUD}): {C['reset']}"
+        )
+        choice = read_line().strip()
         try:
-            choice = input(
-                f"  {C['cyan']}> Избери baud rate [1-{len(COMMON_BAUD_RATES)}] "
-                f"или въведи custom: {C['reset']}"
-            ).strip()
-            num = int(choice)
-            if 1 <= num <= len(COMMON_BAUD_RATES):
-                baud = COMMON_BAUD_RATES[num - 1]
-            elif num > 0:
-                baud = num
+            if not choice:
+                baud = DEFAULT_BAUD
             else:
-                raise ValueError
+                num = int(choice)
+                if 1 <= num <= len(COMMON_BAUD_RATES):
+                    baud = COMMON_BAUD_RATES[num - 1]
+                elif num > 0:
+                    baud = num
+                else:
+                    raise ValueError
             print(f"  {C['green']}Baud rate: {baud}{C['reset']}\n")
             return baud
         except ValueError:
             print(f"  {C['red']}Невалидна стойност. Опитай пак.{C['reset']}")
 
 
+# === Pomoshtni funktsii za sesiyata =======================================
+
+def parse_hex(text):
+    """
+    Preobrazuva HEX tekst v bajtove.
+    Priema '01 A2 ff', '0x01,0xA2', '0X1 0XFF', '01A2FF'.
+    """
+    tokens = [t for t in re.split(r"[\s,;]+", text) if t]
+    parts = []
+    for tok in tokens:
+        if tok[:2].lower() == "0x":
+            tok = tok[2:]
+        if len(tok) % 2:
+            tok = "0" + tok
+        parts.append(tok)
+    return bytes.fromhex("".join(parts))
+
+
+def wait_for_port(port):
+    """
+    Sled prekusvane chaka sashtiyat port da se poyavi otnovo.
+    Vrashta True ako portat se e poyavil, False ako potrebitelyat
+    e natisnal Enter (iska drug port).
+    """
+    print(f"\n  {C['yellow']}Изчакване {port} да се появи отново...{C['reset']}")
+    print(f"  {C['dim']}(Enter = избор на друг порт, Ctrl+C = изход){C['reset']}\n")
+    while True:
+        if read_line(timeout=1) is not None:
+            print(f"  {C['dim']}{'=' * BOX_W}{C['reset']}\n")
+            return False
+        if any(p.device == port for p in get_port_list()):
+            print(f"  {C['green']}{port} е открит отново.{C['reset']}")
+            time.sleep(1)  # davame vreme na drajvera da se inicializira
+            return True
+
+
 # === Chetene ot serijniya port (fonov thread) =============================
 
-def reader_thread(ser, stop_event, disconnect_event):
-    """Nepreksanato chete ot serijniya port i pechata na ekrana."""
+def reader_thread(ser, stop_event, disconnect_event, settings, out):
+    """
+    Nepreksanato chete ot serijniya port i pechata na ekrana.
+    out: obsht rechnik s 'lock' i 'mid_line' (dali posledniyat RX ne e
+    zavarshil s nov red), za da ne se smesvat RX i TX na edin red.
+    """
+    # Inkrementalen dekoder - pazi nepalnite UTF-8 simvoli mezhdu chetenyata
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
     while not stop_event.is_set():
         try:
             if ser.in_waiting > 0:
                 data = ser.read(ser.in_waiting)
-                text = data.decode("utf-8", errors="replace")
-                print(f"{C['green']}{text}{C['reset']}", end="", flush=True)
+                if settings["hex"]:
+                    text = " ".join(f"{b:02X}" for b in data)
+                    # Nov red sled 0A, za da ostane chetimo
+                    mid_line = not data.endswith(b"\n")
+                    text += " " if mid_line else "\n"
+                else:
+                    text = decoder.decode(data)
+                    if not text:
+                        continue
+                    mid_line = not text.endswith("\n")
+                with out["lock"]:
+                    print(f"{C['green']}{text}{C['reset']}", end="", flush=True)
+                    out["mid_line"] = mid_line
             else:
                 time.sleep(0.02)
         except (serial.SerialException, OSError):
@@ -279,29 +374,37 @@ def reader_thread(ser, stop_event, disconnect_event):
 
 # === Sesiya: svurzvane i komunikatsiya ====================================
 
-def run_session(port, baud):
+def run_session(port, baud, settings, open_attempts=1):
     """
     Otvarya serijna vruzka i upravlyava komunikatsiyata.
+    settings: {'eol': ..., 'hex': ...} - zapazva se mezhdu sesiite.
     Vrushta:
-        'reconnect' - port e izklyuchen, vrushtame se v menyuto
-        'quit'      - potrebitelyat iska da izleze
+        'disconnected' - ustrojstvoto e izklyucheno po vreme na sesiyata
+        'failed'       - portat ne mozhe da bade otvoren
+        'quit'         - potrebitelyat iska da izleze
     """
     print(f"  {C['cyan']}Свързване с {port} @ {baud}...{C['reset']}")
-    try:
-        ser = serial.Serial(
-            port=port,
-            baudrate=baud,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=0.1,
-            write_timeout=2,
-        )
-        time.sleep(0.5)
-    except serial.SerialException as e:
-        print(f"  {C['red']}Неуспешно свързване: {e}{C['reset']}")
-        time.sleep(2)
-        return "reconnect"
+    for attempt in range(1, open_attempts + 1):
+        try:
+            ser = serial.Serial(
+                port=port,
+                baudrate=baud,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=0.1,
+                write_timeout=2,
+            )
+            time.sleep(0.5)
+            break
+        except serial.SerialException as e:
+            if attempt < open_attempts:
+                time.sleep(1)
+                continue
+            print(f"  {C['red']}Неуспешно свързване: {e}{C['reset']}")
+            time.sleep(2)
+            print(f"\n  {C['dim']}{'=' * BOX_W}{C['reset']}\n")
+            return "failed"
 
     w = BOX_W
     conn_msg = f"SVURZAN  |  {port}  |  {baud} baud"
@@ -311,47 +414,50 @@ def run_session(port, baud):
     print(f"  {'=' * w}{C['reset']}")
     print()
     print(f"  {C['dim']}Въведи текст и натисни Enter за изпращане.")
-    print(f"  Команди:  /quit  /clear  /hex  /info{C['reset']}")
+    print(f"  Команди:  /quit  /clear  /hex  /eol [lf|crlf|cr|none]  /info")
+    print(f"  Режим: {'HEX' if settings['hex'] else 'TEXT'}   "
+          f"Край на реда: {settings['eol'].upper()}{C['reset']}")
     print(f"  {C['dim']}{'-' * w}{C['reset']}")
     print()
 
     stop_event = threading.Event()
     disconnect_event = threading.Event()
-    hex_mode = False
+    out = {"lock": threading.Lock(), "mid_line": False}
 
     reader = threading.Thread(
         target=reader_thread,
-        args=(ser, stop_event, disconnect_event),
+        args=(ser, stop_event, disconnect_event, settings, out),
         daemon=True
     )
     reader.start()
 
+    def show(text):
+        """Pechata red, kato pri nuzhda zatvarya nezavarsheniya RX red."""
+        with out["lock"]:
+            if out["mid_line"]:
+                print()
+                out["mid_line"] = False
+            print(text)
+
     result = "quit"
 
     try:
-        while not stop_event.is_set():
+        while True:
             if disconnect_event.is_set():
-                result = "reconnect"
+                result = "disconnected"
                 break
 
             try:
-                user_input = input()
+                user_input = read_line(timeout=0.1)
             except EOFError:
+                result = "quit"
                 break
+            if user_input is None:
+                continue
 
             if disconnect_event.is_set():
-                result = "reconnect"
+                result = "disconnected"
                 break
-
-            if not user_input:
-                try:
-                    ser.write(b"\n")
-                except serial.SerialException as e:
-                    print(f"  {C['red']}Грешка при изпращане: {e}{C['reset']}")
-                    disconnect_event.set()
-                    result = "reconnect"
-                    break
-                continue
 
             cmd = user_input.strip().lower()
 
@@ -366,46 +472,60 @@ def run_session(port, baud):
                 continue
 
             elif cmd == "/hex":
-                hex_mode = not hex_mode
-                mode_str = "HEX" if hex_mode else "TEXT"
-                print(f"  {C['magenta']}Режим: {mode_str}{C['reset']}")
+                settings["hex"] = not settings["hex"]
+                mode_str = "HEX" if settings["hex"] else "TEXT"
+                show(f"  {C['magenta']}Режим: {mode_str} (изпращане и получаване){C['reset']}")
+                continue
+
+            elif cmd == "/eol" or cmd.startswith("/eol "):
+                arg = cmd[4:].strip()
+                if arg in EOL_OPTIONS:
+                    settings["eol"] = arg
+                    show(f"  {C['magenta']}Край на реда: {arg.upper()}{C['reset']}")
+                else:
+                    opts = " | ".join(EOL_OPTIONS)
+                    show(f"  {C['magenta']}Край на реда: {settings['eol'].upper()}   "
+                         f"{C['dim']}(/eol {opts}){C['reset']}")
                 continue
 
             elif cmd == "/info":
-                print(f"\n  {C['cyan']}+{'=' * 38}+")
-                print(f"  | {'Порт:':<12} {ser.port:<23} |")
-                print(f"  | {'Baud rate:':<12} {ser.baudrate:<23} |")
-                print(f"  | {'Data bits:':<12} {ser.bytesize:<23} |")
-                print(f"  | {'Parity:':<12} {ser.parity:<23} |")
-                print(f"  | {'Stop bits:':<12} {ser.stopbits:<23} |")
                 is_open_str = "Svurzan" if ser.is_open else "Prekusnat"
-                print(f"  | {'Status:':<12} {is_open_str:<23} |")
-                print(f"  +{'=' * 38}+{C['reset']}\n")
+                mode_str = "HEX" if settings["hex"] else "TEXT"
+                show(f"\n  {C['cyan']}+{'=' * 38}+\n"
+                     f"  | {'Порт:':<12} {ser.port:<23} |\n"
+                     f"  | {'Baud rate:':<12} {ser.baudrate:<23} |\n"
+                     f"  | {'Data bits:':<12} {ser.bytesize:<23} |\n"
+                     f"  | {'Parity:':<12} {ser.parity:<23} |\n"
+                     f"  | {'Stop bits:':<12} {ser.stopbits:<23} |\n"
+                     f"  | {'Режим:':<12} {mode_str:<23} |\n"
+                     f"  | {'EOL:':<12} {settings['eol'].upper():<23} |\n"
+                     f"  | {'Status:':<12} {is_open_str:<23} |\n"
+                     f"  +{'=' * 38}+{C['reset']}\n")
                 continue
 
             # Izprashtane na danni
             try:
-                if hex_mode:
-                    hex_clean = user_input.replace(" ", "").replace("0x", "")
-                    data = bytes.fromhex(hex_clean)
-                else:
-                    data = (user_input + "\n").encode("utf-8")
-
-                ser.write(data)
-                direction = f"{C['blue']}TX >{C['reset']}"
-                if hex_mode:
+                if settings["hex"]:
+                    data = parse_hex(user_input)
+                    if not data:
+                        continue
                     display = " ".join(f"{b:02X}" for b in data)
                 else:
+                    data = user_input.encode("utf-8") + EOL_OPTIONS[settings["eol"]]
+                    if not data:
+                        continue
                     display = user_input
-                print(f"  {direction} {C['dim']}{display}{C['reset']}")
+
+                ser.write(data)
+                show(f"  {C['blue']}TX >{C['reset']} {C['dim']}{display}{C['reset']}")
 
             except serial.SerialException as e:
-                print(f"  {C['red']}Грешка при изпращане: {e}{C['reset']}")
+                show(f"  {C['red']}Грешка при изпращане: {e}{C['reset']}")
                 disconnect_event.set()
-                result = "reconnect"
+                result = "disconnected"
                 break
             except ValueError:
-                print(f"  {C['red']}Невалиден HEX формат.{C['reset']}")
+                show(f"  {C['red']}Невалиден HEX формат.{C['reset']}")
 
     except KeyboardInterrupt:
         print(f"\n\n  {C['yellow']}Прекъснато с Ctrl+C{C['reset']}")
@@ -420,11 +540,6 @@ def run_session(port, baud):
         except Exception:
             pass
 
-    if result == "reconnect":
-        print(f"\n  {C['yellow']}Връщане към избор на порт след 3 сек...{C['reset']}")
-        time.sleep(3)
-        print(f"\n  {C['dim']}{'=' * BOX_W}{C['reset']}\n")
-
     return result
 
 
@@ -433,20 +548,27 @@ def run_session(port, baud):
 def main():
     """
     Osnoven tsikul na programata.
-    Pri disconnect avtomatichno se vrushta kam izbora na port.
+    Pri disconnect izchakva sashtiyat port i se svarzva otnovo avtomatichno;
+    s Enter potrebitelyat mozhe da se varne kam izbora na port.
     """
     banner()
-    while True:
-        port = select_port()
-        baud = select_baud()
+    settings = {"eol": "lf", "hex": False}
+    try:
+        while True:
+            port = select_port()
+            baud = select_baud()
 
-        result = run_session(port, baud)
+            result = run_session(port, baud, settings)
+            while result == "disconnected" and wait_for_port(port):
+                result = run_session(port, baud, settings, open_attempts=3)
 
-        if result == "quit":
-            print(f"  {C['green']}Довиждане!{C['reset']}\n")
-            break
-        # result == "reconnect" -> tsikylyt produlzhava,
-        # select_port() shte pokazhe nov spisak s portove
+            if result == "quit":
+                break
+            # 'failed' ili otkaz ot izchakvaneto -> obratno kam izbora na port
+    except (KeyboardInterrupt, EOFError):
+        print()
+
+    print(f"  {C['green']}Довиждане!{C['reset']}\n")
 
 
 if __name__ == "__main__":
